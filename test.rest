@@ -9,6 +9,10 @@ Accept: application/json
 GET {{baseUrl}}/v1/models
 Accept: application/json
 
+### Available Codex models — Ollama-compatible tags format
+GET {{baseUrl}}/api/tags
+Accept: application/json
+
 ### OpenAI Chat Completions — use Codex's configured default model
 POST {{baseUrl}}/v1/chat/completions
 Content-Type: application/json

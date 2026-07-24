@@ -414,6 +414,35 @@ async def list_models() -> dict[str, Any]:
     ]}
 
 
+@app.get("/api/tags")
+async def list_ollama_tags() -> dict[str, Any]:
+    """Expose the signed-in Codex model catalog using Ollama's tags shape."""
+    try:
+        models = await list_codex_models()
+    except CodexRunError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"models": [
+        {
+            "name": model["model"],
+            "model": model["model"],
+            # Codex models are remote, so Ollama's local-file metadata has no
+            # meaningful value. Keep the fields present for client compatibility.
+            "modified_at": "1970-01-01T00:00:00Z",
+            "size": 0,
+            "digest": "",
+            "details": {
+                "parent_model": "",
+                "format": "",
+                "family": "codex",
+                "families": ["codex"],
+                "parameter_size": "",
+                "quantization_level": "",
+            },
+        }
+        for model in models if isinstance(model.get("model"), str) and model["model"]
+    ]}
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Any:
     request_id = new_id("req")

@@ -38,6 +38,7 @@ The server listens on `http://127.0.0.1:9000` by default.
 | --- | --- | --- |
 | `GET` | `/healthz`, `/readyz` | Proxy and Codex executable health status. |
 | `GET` | `/v1/models` | Models available through the signed-in Codex CLI. |
+| `GET` | `/api/tags` | Models available through the signed-in Codex CLI, in Ollama's tags response format. |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions-compatible chat endpoint. |
 | `POST` | `/v1/messages` | Anthropic Messages-compatible chat endpoint. |
 
