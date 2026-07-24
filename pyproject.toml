@@ -1,0 +1,20 @@
+[project]
+name = "codex-cli-proxy"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.139.2",
+    "uvicorn>=0.51.0",
+]
+
+[project.scripts]
+codex-cli-proxy = "codex_proxy.app:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+packages = ["codex_proxy"]
+package-dir = { codex_proxy = "codex-proxy" }

@@ -1,0 +1,82 @@
+@baseUrl = http://127.0.0.1:9000
+@openaiApiKey = {{$dotenv %OPENAI_API_KEY}}
+
+### Health check
+GET {{baseUrl}}/healthz
+Accept: application/json
+
+### Available Codex models
+GET {{baseUrl}}/v1/models
+Accept: application/json
+
+### OpenAI Chat Completions — use Codex's configured default model
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: application/json
+
+{
+  "messages": [
+    {"role": "system", "content": "Reply concisely."},
+    {"role": "user", "content": "What is the capital of France?"}
+  ],
+  "stream": false
+}
+
+### OpenAI Chat Completions — select a Codex model
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: application/json
+
+{
+  "model": "gpt-5.6-sol",
+  "messages": [
+    {"role": "user", "content": "Explain recursion in one sentence."}
+  ],
+  "stream": true
+}
+
+### Anthropic Messages — use Codex's configured default model
+POST {{baseUrl}}/v1/messages
+Content-Type: application/json
+anthropic-version: 2023-06-01
+Accept: application/json
+
+{
+  "max_tokens": 512,
+  "system": "Reply concisely.",
+  "messages": [
+    {"role": "user", "content": "What is the capital of France?"}
+  ],
+  "stream": true
+}
+
+### Anthropic Messages — select a Codex model
+POST {{baseUrl}}/v1/messages
+Content-Type: application/json
+anthropic-version: 2023-06-01
+Accept: application/json
+
+{
+  "model": "gpt-5.6-sol",
+  "max_tokens": 512,
+  "messages": [
+    {"role": "user", "content": "Write a one-sentence greeting."}
+  ],
+  "stream": true
+}
+
+### Actual OpenAI cloud call — GPT-5.6
+# Set OPENAI_API_KEY in your environment or REST client .env file.
+POST https://api.openai.com/v1/chat/completions
+Authorization: Bearer {{openaiApiKey}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "model": "gpt-5.6",
+  "messages": [
+    {"role": "system", "content": "Reply concisely."},
+    {"role": "user", "content": "What is the capital of France?"}
+  ],
+  "stream": false
+}
