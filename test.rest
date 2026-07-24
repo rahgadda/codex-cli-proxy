@@ -35,6 +35,25 @@ Accept: application/json
   "stream": true
 }
 
+### OpenAI Chat Completions — base64 image input
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: application/json
+
+{
+  "model": "gpt-5.6-sol",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Describe this image."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL6WQAAAABJRU5ErkJggg=="}}
+      ]
+    }
+  ],
+  "stream": false
+}
+
 ### Anthropic Messages — use Codex's configured default model
 POST {{baseUrl}}/v1/messages
 Content-Type: application/json

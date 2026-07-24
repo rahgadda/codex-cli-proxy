@@ -1,10 +1,11 @@
 """Local Codex CLI proxy with OpenAI and Anthropic-compatible endpoints.
 
-The service deliberately exposes only text chat. Codex itself can use its own
-tools; callers cannot inject arbitrary external tool calls through this proxy.
+The service exposes text chat with base64 image attachments. Codex itself can
+use its own tools; callers cannot inject arbitrary external tool calls.
 """
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -34,6 +35,9 @@ CODEX_TIMEOUT_SECONDS = float(os.getenv("CODEX_TIMEOUT_SECONDS", "900"))
 CODEX_EPHEMERAL = env_bool("CODEX_EPHEMERAL", True)
 CODEX_MAX_CONCURRENCY = max(1, int(os.getenv("CODEX_MAX_CONCURRENCY", "1")))
 KEEPALIVE_SECONDS = float(os.getenv("KEEPALIVE_SECONDS", "10"))
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_IMAGES = 10
+IMAGE_SUFFIXES = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}
 
 app = FastAPI(title="Codex CLI OpenAI/Anthropic compatibility proxy", version="0.1.0")
 _codex_slots = asyncio.Semaphore(CODEX_MAX_CONCURRENCY)
@@ -59,6 +63,18 @@ class CodexResult:
     text: str
     usage: Usage
     thread_id: str | None = None
+
+
+@dataclass(slots=True)
+class ImageInput:
+    data: bytes
+    suffix: str
+
+
+@dataclass(slots=True)
+class PromptInput:
+    text: str
+    images: list[ImageInput]
 
 
 class CodexRunError(RuntimeError):
@@ -101,22 +117,66 @@ async def formatted_unhandled_error(request: Request, _: Exception) -> JSONRespo
     return JSONResponse(status_code=500, content={"error": {"message": "Internal proxy error", "type": "server_error", "param": None, "code": None}}, headers={"x-request-id": request_id})
 
 
-def extract_text(content: Any) -> str:
-    """Normalize OpenAI and Anthropic text content blocks into a prompt string."""
+def add_image(data: str, media_type: str, images: list[ImageInput]) -> None:
+    """Decode a supported base64 image attachment."""
+    if media_type not in IMAGE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Supported image media types are JPEG, PNG, GIF, and WebP")
+    if len(images) >= MAX_IMAGES:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_IMAGES} images are supported per request")
+    try:
+        decoded = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Image data must be valid base64") from exc
+    if not decoded or len(decoded) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail=f"Each image must be between 1 byte and {MAX_IMAGE_BYTES // (1024 * 1024)} MB")
+    images.append(ImageInput(decoded, IMAGE_SUFFIXES[media_type]))
+
+
+def add_data_url_image(url: Any, images: list[ImageInput]) -> None:
+    if not isinstance(url, str) or not url.startswith("data:"):
+        raise HTTPException(status_code=400, detail="Only base64 data URL images are supported")
+    try:
+        header, data = url.split(",", 1)
+        media_type, encoding = header[5:].split(";", 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Image data URL is invalid") from exc
+    if encoding.lower() != "base64":
+        raise HTTPException(status_code=400, detail="Image data URL must use base64 encoding")
+    add_image(data, media_type.lower(), images)
+
+
+def extract_text(content: Any, images: list[ImageInput]) -> str:
+    """Normalize text and collect OpenAI/Anthropic base64 image content blocks."""
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n".join(part for item in content if (part := extract_text(item)))
+        return "\n".join(part for item in content if (part := extract_text(item, images)))
     if isinstance(content, dict):
         kind = str(content.get("type", ""))
-        if kind in {"image", "image_url", "input_image", "audio", "input_audio", "tool_use", "tool_result", "function_call", "function_call_output"}:
-            raise HTTPException(status_code=400, detail="Only text input is supported by this proxy")
+        if kind in {"image_url", "input_image"}:
+            image_url = content.get("image_url")
+            add_data_url_image(image_url.get("url") if isinstance(image_url, dict) else image_url, images)
+            return "[Image attachment]"
+        if kind == "image":
+            source = content.get("source")
+            if not isinstance(source, dict) or source.get("type") != "base64":
+                raise HTTPException(status_code=400, detail="Anthropic images must use a base64 source")
+            image_data = source.get("data")
+            media_type = source.get("media_type")
+            if not isinstance(image_data, str) or not isinstance(media_type, str):
+                raise HTTPException(status_code=400, detail="Anthropic image data and media type must be strings")
+            add_image(image_data, media_type.lower(), images)
+            return "[Image attachment]"
+        if kind in {"audio", "input_audio"}:
+            raise HTTPException(status_code=400, detail="Audio input is not supported by the local Codex CLI")
+        if kind in {"tool_use", "tool_result", "function_call", "function_call_output"}:
+            raise HTTPException(status_code=400, detail="External tool calling is not implemented by this proxy")
         if kind in {"text", "input_text", "output_text"}:
             text = content.get("text", "")
             return str(text.get("value", "") if isinstance(text, dict) else text)
-        return extract_text(content["content"]) if "content" in content else str(content.get("text", ""))
+        return extract_text(content["content"], images) if "content" in content else str(content.get("text", ""))
     return str(content)
 
 
@@ -141,11 +201,12 @@ def requested_model(body: dict[str, Any]) -> str | None:
     return model.strip()
 
 
-def build_prompt(messages: Any, system: Any = None) -> str:
+def build_prompt(messages: Any, system: Any = None) -> PromptInput:
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="messages must be a non-empty array")
     transcript: list[dict[str, str]] = []
-    if system is not None and (text := extract_text(system).strip()):
+    images: list[ImageInput] = []
+    if system is not None and (text := extract_text(system, images).strip()):
         transcript.append({"role": "system", "content": text})
     for raw in messages:
         if not isinstance(raw, dict):
@@ -155,14 +216,14 @@ def build_prompt(messages: Any, system: Any = None) -> str:
             raise HTTPException(status_code=400, detail=f"Unsupported message role: {role}")
         if raw.get("tool_calls") or raw.get("function_call"):
             raise HTTPException(status_code=400, detail="External tool calling is not implemented by this proxy")
-        transcript.append({"role": role, "content": extract_text(raw.get("content"))})
+        transcript.append({"role": role, "content": extract_text(raw.get("content"), images)})
     if not any(message["role"] == "user" for message in transcript):
         raise HTTPException(status_code=400, detail="At least one user message is required")
-    prompt = "You are serving a chat API request. Interpret each role literally and answer the final user message. Return only the assistant response.\n\nCONVERSATION_JSON:\n" + json.dumps(transcript, ensure_ascii=False)
-    return prompt
+    text = "You are serving a chat API request. Interpret each role literally and answer the final user message. Return only the assistant response.\n\nCONVERSATION_JSON:\n" + json.dumps(transcript, ensure_ascii=False)
+    return PromptInput(text, images)
 
 
-async def run_codex(prompt: str, model: str | None = None, request_id: str | None = None) -> CodexResult:
+async def run_codex(prompt: PromptInput, model: str | None = None, request_id: str | None = None) -> CodexResult:
     if shutil.which(CODEX_BIN) is None and not Path(CODEX_BIN).exists():
         raise CodexRunError(f"Codex executable not found: {CODEX_BIN}")
     async with _codex_slots:
@@ -176,6 +237,10 @@ async def run_codex(prompt: str, model: str | None = None, request_id: str | Non
                 started_at = time.monotonic()
                 logger.info("Request %s: Codex execution started", request_id or "unknown")
                 command = [CODEX_BIN, "exec", "--json", "--color", "never", "--output-last-message", str(output_path), "--sandbox", CODEX_SANDBOX, "--skip-git-repo-check"]
+                for index, image in enumerate(prompt.images):
+                    image_path = Path(workspace) / f"image-{index}{image.suffix}"
+                    image_path.write_bytes(image.data)
+                    command.extend(("--image", str(image_path)))
                 if CODEX_EPHEMERAL:
                     command.append("--ephemeral")
                 if model:
@@ -184,7 +249,7 @@ async def run_codex(prompt: str, model: str | None = None, request_id: str | Non
                     process = await asyncio.create_subprocess_exec(*command, cwd=workspace, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 except OSError as exc:
                     raise CodexRunError(f"Could not start Codex: {exc}") from exc
-                stdout, stderr = await asyncio.wait_for(process.communicate(prompt.encode()), timeout=CODEX_TIMEOUT_SECONDS)
+                stdout, stderr = await asyncio.wait_for(process.communicate(prompt.text.encode()), timeout=CODEX_TIMEOUT_SECONDS)
                 usage, thread_id, fallback_text = Usage(), None, ""
                 for line in stdout.splitlines():
                     with contextlib.suppress(json.JSONDecodeError):
@@ -282,7 +347,7 @@ async def list_codex_models() -> list[dict[str, Any]]:
     raise CodexRunError("Codex model listing returned no model catalog")
 
 
-async def complete_with_keepalives(prompt: str, model: str | None, request_id: str) -> AsyncIterator[CodexResult | None]:
+async def complete_with_keepalives(prompt: PromptInput, model: str | None, request_id: str) -> AsyncIterator[CodexResult | None]:
     task = asyncio.create_task(run_codex(prompt, model, request_id))
     while not task.done():
         done, _ = await asyncio.wait({task}, timeout=KEEPALIVE_SECONDS)
@@ -291,7 +356,7 @@ async def complete_with_keepalives(prompt: str, model: str | None, request_id: s
     yield task.result()
 
 
-async def openai_stream(prompt: str, model: str, selected_model: str | None, include_usage: bool, request_id: str) -> AsyncIterator[str]:
+async def openai_stream(prompt: PromptInput, model: str, selected_model: str | None, include_usage: bool, request_id: str) -> AsyncIterator[str]:
     completion_id, created = new_id("chatcmpl"), int(time.time())
     def event(delta: dict[str, Any], finish_reason: str | None = None, usage: dict[str, Any] | None = None) -> str:
         payload: dict[str, Any] = {"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": [] if usage else [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish_reason}]}
@@ -313,7 +378,7 @@ async def openai_stream(prompt: str, model: str, selected_model: str | None, inc
     yield "data: [DONE]\n\n"
 
 
-async def anthropic_stream(prompt: str, model: str, selected_model: str | None, request_id: str) -> AsyncIterator[str]:
+async def anthropic_stream(prompt: PromptInput, model: str, selected_model: str | None, request_id: str) -> AsyncIterator[str]:
     message_id = new_id("msg")
     yield f"event: message_start\ndata: {compact_json({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
     yield 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
