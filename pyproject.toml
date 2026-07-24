@@ -1,7 +1,7 @@
 [project]
 name = "codex-cli-proxy"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.0.1"
+description = "Local OpenAI and Anthropic-compatible chat proxy backed by the Codex CLI"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,8 +9,12 @@ dependencies = [
     "uvicorn>=0.51.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/rahgadda/codex-cli-proxy"
+Repository = "https://github.com/rahgadda/codex-cli-proxy"
+
 [project.scripts]
-codex-cli-proxy = "codex_proxy.app:main"
+codex-cli-proxy = "codex_proxy_cli.app:main"
 
 [tool.uv]
 package = true
