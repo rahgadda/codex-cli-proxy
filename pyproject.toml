@@ -20,5 +20,5 @@ codex-cli-proxy = "codex_proxy_cli.app:main"
 package = true
 
 [tool.setuptools]
-packages = ["codex_proxy"]
-package-dir = { codex_proxy = "codex-proxy" }
+packages = ["codex_proxy_cli"]
+package-dir = { codex_proxy_cli = "codex-proxy-cli" }
